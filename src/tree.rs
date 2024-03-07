@@ -1,5 +1,5 @@
 use std::{
-    collections::{BinaryHeap, HashMap},
+    collections::{BTreeMap, BinaryHeap, HashMap},
     fmt::Debug,
     hash::Hash,
 };
@@ -39,7 +39,7 @@ impl<Symbol> HuffmanNode<Symbol> {
     fn leaf(symbol: Symbol, frequency: usize) -> Self {
         Self {
             symbol: Some(symbol),
-            frequency: frequency,
+            frequency,
             left: None,
             right: None,
         }
@@ -48,7 +48,7 @@ impl<Symbol> HuffmanNode<Symbol> {
     fn node(frequency: usize, left: HuffmanNode<Symbol>, right: HuffmanNode<Symbol>) -> Self {
         Self {
             symbol: None,
-            frequency: frequency,
+            frequency,
             left: Some(Box::new(left)),
             right: Some(Box::new(right)),
         }
@@ -179,6 +179,66 @@ where
         codebook
     }
 
+    pub fn get_canonical_codebook(&self) -> HashMap<Symbol, BitVec> {
+        let codebook = self.get_codebook();
+
+        let mut codes_by_length: BTreeMap<usize, Vec<(Symbol, BitVec)>> = BTreeMap::new();
+
+        for (symbol, code) in codebook.clone() {
+            codes_by_length
+                .entry(code.len())
+                .and_modify(|x| x.push((symbol.clone(), code.clone())))
+                .or_insert(vec![(symbol, code)]);
+        }
+
+        // Sort each entry
+        for (_, pairs) in codes_by_length.iter_mut() {
+            pairs.sort();
+        }
+
+        let mut canonical_codebook: HashMap<Symbol, BitVec> = HashMap::new();
+
+        /* Thanks copilot */
+        let mut next_code = BitVec::new();
+        for (&length, pairs) in codes_by_length.iter() {
+            for (i, (symbol, _)) in pairs.iter().enumerate() {
+                if i == 0 {
+                    // For the first item in each length, ensure the code is of the proper length.
+                    next_code.resize(length, false);
+                } else {
+                    // Increment the binary number represented by `next_code`.
+                    for j in (0..next_code.len()).rev() {
+                        if next_code[j] {
+                            next_code.set(j, false);
+                        } else {
+                            next_code.set(j, true);
+                            break;
+                        }
+                    }
+                }
+
+                canonical_codebook.insert(symbol.clone(), next_code.clone());
+            }
+
+            // Prepare the next_code for the next length by adding a 1 at the end,
+            // effectively incrementing it by 1 in binary and then extending it
+            // to the required new length.
+            let increment = true;
+            for j in (0..next_code.len()).rev() {
+                if next_code[j] == increment {
+                    next_code.set(j, !increment);
+                } else {
+                    next_code.set(j, increment);
+                    break;
+                }
+            }
+            // Ensure the next code is of the correct length for the next iteration
+            next_code.push(false);
+        }
+
+        canonical_codebook
+    }
+
     fn code_to_node_mut(&mut self, code: BitVec) -> Option<&mut HuffmanNode<Symbol>> {
         let mut current_node = &mut *self.root;
 
@@ -218,6 +278,35 @@ mod tests {
 
         for (_, bits) in codebook.iter() {
             assert!(bits.len() >= 4);
+        }
+    }
+
+    #[test]
+    fn test_canonical_codebook() {
+        let frequencies = vec![('a', 45), ('b', 13), ('c', 12), ('d', 10)];
+        let tree = HuffmanTree::from_iter(frequencies.into_iter());
+        let canonical_codebook = tree.get_canonical_codebook();
+
+        let expected_codes: HashMap<char, &str> =
+            [('a', "0"), ('b', "10"), ('c', "110"), ('d', "111")]
+                .iter()
+                .cloned()
+                .collect();
+
+        // Verify that each symbol's code matches the expected canonical code
+        for (symbol, expected_code_str) in expected_codes.iter() {
+            let code = canonical_codebook
+                .get(symbol)
+                .expect("Symbol missing in canonical codebook");
+            let code_str = code
+                .iter()
+                .map(|bit| if *bit { '1' } else { '0' })
+                .collect::<String>();
+            assert_eq!(
+                code_str, *expected_code_str,
+                "Code mismatch for symbol '{}'",
+                symbol
+            );
         }
     }
 }
