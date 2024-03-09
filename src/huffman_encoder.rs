@@ -12,6 +12,7 @@ use std::{
 use thiserror::Error;
 
 const MAX_DICTIONARY_ENTRY_LENGTH: usize = 2;
+const NULL_PADDING_SYMBOL: [u8; 4] = [0, 0, 0, 0];
 
 #[derive(Error, Debug)]
 pub enum HuffmanEncodingError {
@@ -40,7 +41,7 @@ impl Default for HuffmanEncoder {
 
 impl HuffmanEncoder {
     pub fn pack(&mut self, data: &[u8]) -> Result<(), HuffmanEncodingError> {
-        println!("data: {:?}", data);
+        println!("packing data: {:?}", data);
 
         let mut buffer: Vec<u8> = vec![data[0]];
         let mut entry_to_indices: HashMap<Vec<u8>, Vec<usize>> = HashMap::new();
@@ -65,6 +66,14 @@ impl HuffmanEncoder {
             }
         }
 
+        if buffer.len() > 0 {
+            let starts_at = data.len().saturating_sub(buffer.len());
+            entry_to_indices
+                .entry(buffer)
+                .and_modify(|x| x.push(starts_at))
+                .or_insert(vec![starts_at]);
+        }
+
         if entry_to_indices.len() > 256 {
             // todo: should trim
             panic!("Dictionary full");
@@ -76,7 +85,7 @@ impl HuffmanEncoder {
         }
 
         // todo: make sure this doesn't collide
-        let null_padding_symbol: Vec<u8> = vec![0, 0, 0, 0];
+        let null_padding_symbol = NULL_PADDING_SYMBOL.to_vec();
         weights.insert(&null_padding_symbol, 1);
 
         let mut tree = HuffmanTree::from_iter(weights.into_iter());
@@ -102,12 +111,15 @@ impl HuffmanEncoder {
         println!("max codes: {:?}", code_length_to_max_code);
 
         // Construct code_dict
-        for code in codebook.values() {
+        for (symbol, code) in codebook.iter() {
             let code_length = code.len();
-            let min_code = code.load::<u8>() << (8 - code_length);
-            let max_code = code.load::<u8>() << (8 - code_length) | (1 << (8 - code_length)) - 1;
+            let inverted_code = (code_length_to_max_code.get(&code_length).unwrap()
+                >> (32 - code_length))
+                - code.load::<u8>() as u32;
+            let min_code = inverted_code << (8 - code_length);
+            let max_code = inverted_code << (8 - code_length) | (1 << (8 - code_length)) - 1;
 
-            for code in min_code..max_code {
+            for code in min_code..(max_code + 1) {
                 if self.table.code_dict[code as usize].1 {
                     panic!("Code collision");
                 }
@@ -120,11 +132,12 @@ impl HuffmanEncoder {
             }
 
             println!(
-                "code: {:08b} ({}), min_code: {:08b}, max_code: {:08b}",
+                "code: {:08b} ({}), min_code: {:08b}, max_code: {:08b}, symbol: {:?}",
                 code.load::<u8>(),
                 code_length,
                 min_code,
-                max_code
+                max_code,
+                symbol
             );
         }
 
@@ -139,33 +152,16 @@ impl HuffmanEncoder {
         println!("indicies to symbol: {:?}", indicies_to_symbol);
 
         for symbol in indicies_to_symbol.values() {
-            let code = codebook.get(*symbol).unwrap();
-            let dictionary_index = code.load::<u8>();
-
-            println!(
-                "using dictionary index: {} {}",
-                dictionary_index,
-                String::from_utf8(symbol.clone().to_vec()).unwrap()
-            );
-
-            self.table.dictionary[dictionary_index as usize] = Some(((*symbol).clone(), true));
-
-            let shifted_code = (dictionary_index as u32) << (32 - code.len());
-            let partial_code: u32 =
-                code_length_to_max_code.get(&code.len()).unwrap() - shifted_code;
-            let partial_code: BitVec<_, Msb0> = BitVec::from_element(partial_code);
-
-            self.compressed
-                .append(&mut partial_code[0..code.len()].to_bitvec());
+            self.write_symbol(*symbol, &codebook, &code_length_to_max_code)
         }
 
-        for pair in self.table.code_dict.iter().enumerate() {
-            if (*pair.1).0 != 0 {
-                println!(
-                    "code dict bit index: {:08b}: {} (len), {:032b} (max code)",
-                    pair.0, pair.1 .0, pair.1 .2
-                );
-            }
+        // Padding
+        while self.compressed.len() % 32 != 0 {
+            self.write_symbol(
+                &NULL_PADDING_SYMBOL.to_vec(),
+                &codebook,
+                &code_length_to_max_code,
+            );
         }
 
         for (i, entry) in self.table.dictionary.iter().enumerate() {
@@ -177,6 +173,37 @@ impl HuffmanEncoder {
         }
 
         Ok(())
+    }
+
+    fn write_symbol(
+        &mut self,
+        symbol: &Vec<u8>,
+        codebook: &HashMap<&Vec<u8>, BitVec>,
+        code_length_to_max_code: &HashMap<usize, u32>,
+    ) {
+        let code = codebook.get(symbol).unwrap();
+        let dictionary_index = code.load::<u8>();
+
+        println!("using dictionary index: {} {:?}", dictionary_index, symbol);
+
+        if (*symbol == NULL_PADDING_SYMBOL) {
+            self.table.dictionary[dictionary_index as usize] = Some((vec![], true));
+        } else {
+            self.table.dictionary[dictionary_index as usize] = Some(((*symbol).clone(), true));
+        }
+
+        let shifted_code = (dictionary_index as u32) << (32 - code.len());
+        let partial_code: u32 = code_length_to_max_code.get(&code.len()).unwrap() - shifted_code;
+        let partial_code: BitVec<_, Msb0> = BitVec::from_element(partial_code);
+
+        println!(
+            "writing {} for {:?}",
+            partial_code[0..code.len()].to_bitvec(),
+            symbol
+        );
+
+        self.compressed
+            .append(&mut partial_code[0..code.len()].to_bitvec());
     }
 
     pub fn finish(self) -> (HuffmanTable, Vec<u8>) {

@@ -21,7 +21,7 @@ impl HuffmanDecoder {
         let mut data = input.to_vec();
         data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
 
-        println!("data: {:?}", data);
+        println!("unpacking data: {:?}", data);
 
         let mut r = Cursor::new(data.as_slice());
 
@@ -54,6 +54,7 @@ impl HuffmanDecoder {
             //     code >> 24,
             //     self.table.code_dict[(code >> 24) as usize]
             // );
+            println!("shifted code {:08b}", code >> 24);
             let (mut code_len, term, mut max_code) = self.table.code_dict[(code >> 24) as usize];
 
             // println!("term: {:?} {:?}", term, max_code);
@@ -118,10 +119,7 @@ impl HuffmanDecoder {
                 self.table.dictionary[index] = Some((slice.clone(), true));
             }
             unpacked.extend_from_slice(&slice);
-            println!(
-                "currently unpacked: {:?}",
-                String::from_utf8(unpacked.clone())
-            );
+            println!("currently unpacked: {:?}", unpacked);
         }
 
         println!("unpacked: {:?}", unpacked);
